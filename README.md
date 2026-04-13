@@ -49,26 +49,54 @@
 
 ## 技术架构
 
-```
-┌─────────────────────────────────────────────────┐
-│                  React + Ant Design              │
-│                   (Vite + SSE)                   │
-└────────────────────┬────────────────────────────┘
-                     │ HTTP / SSE
-┌────────────────────▼────────────────────────────┐
-│                  FastAPI 后端                     │
-│                                                  │
-│  Phase 1 (并行)    Phase 2         Phase 3       │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐   │
-│  │ 天气Agent │    │ 行程Agent │    │ 预算Agent │   │
-│  │ 目的地Agent│    └──────────┘    └──────────┘   │
-│  │ 住宿Agent │                                   │
-│  └──────────┘                                    │
-│                                                  │
-│  ┌──────────────┐  ┌──────────────┐              │
-│  │ 高德地图 API  │  │ Trace 追踪   │              │
-│  └──────────────┘  └──────────────┘              │
-└──────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Client["🖥️ 前端 · React 19 + Ant Design 6 + Vite 8"]
+        Input["📝 旅行参数输入\n出发地 / 目的地 / 日期 / 偏好 / 人数 / 预算"]
+        Render["📄 Markdown 渲染\n逐模块展示结果"]
+        Regen["🔄 局部重生成\n用户反馈 → 单模块重跑"]
+        POICard["🗂️ POI 卡片\n景点图片 / 坐标 / 地图"]
+    end
+
+    Input -->|"POST /api/plan/stream"| Gateway
+    Regen -->|"POST /api/plan/regenerate"| Gateway
+    Gateway -.->|"SSE 流式推送"| Render
+    Gateway -.->|"POI 数据"| POICard
+
+    subgraph Backend["⚙️ 后端 · FastAPI + Agno"]
+        Gateway["🔀 API Gateway\n构建 Prompt / 路由分发"]
+
+        subgraph Phase1["Phase 1 · 并行执行"]
+            W["🌤️ 天气 Agent\n逐日天气 + 穿衣建议"]
+            D["📍 目的地 Agent\n城市介绍 + 核心区域"]
+            A["🏨 住宿 Agent\n区域推荐 + 价格对比"]
+        end
+
+        subgraph Phase2["Phase 2 · 依赖天气+目的地"]
+            I["🗓️ 行程 Agent\n每日行程 + POI 输出"]
+        end
+
+        subgraph Phase3["Phase 3 · 依赖行程+住宿"]
+            B["💰 预算 Agent\n费用分项 + 省钱建议"]
+        end
+
+        POI["📌 POI 补全引擎\n坐标 / 地址 / 图片 / 静态地图"]
+        Trace["📊 Trace 追踪系统\n耗时 / Token / 工具调用 / 瀑布图"]
+
+        Gateway --> Phase1
+        Phase1 -->|"天气+目的地摘要"| Phase2
+        Phase2 -->|"行程+住宿摘要"| Phase3
+        I --> POI
+        Gateway --> Trace
+    end
+
+    subgraph External["🌐 外部服务"]
+        LLM["🤖 LLM 模型\nDeepSeek / OpenAI / Anthropic"]
+        AMAP["🗺️ 高德地图 API\nPOI 搜索 / 地理编码 / 静态地图"]
+    end
+
+    W & D & A & I & B -->|"Agno Agent 调用"| LLM
+    POI -->|"坐标+图片查询"| AMAP
 ```
 
 ## 技术栈
