@@ -1,0 +1,23 @@
+# Python 虚拟环境
+travel/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# Node 依赖
+node_modules/
+
+# IDE
+.idea/
+
+# Claude Code
+.claude/
+
+# 运行时数据库
+backend/trace.db
+backend/travel.db
+
+# 系统文件
+.DS_Store
+Thumbs.db

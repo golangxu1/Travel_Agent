@@ -1,0 +1,14 @@
+# backend/requirements.txt
+
+# Web 框架
+fastapi
+uvicorn[standard]
+
+# agno 核心
+agno
+
+# 环境变量
+python-dotenv
+
+# 数据校验（agno 和 fastapi 都依赖）
+pydantic
