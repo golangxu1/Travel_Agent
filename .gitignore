@@ -1,5 +1,6 @@
 # Python 虚拟环境
 travel/
+venv/
 
 # Python 缓存
 __pycache__/

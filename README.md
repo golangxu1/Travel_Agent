@@ -73,8 +73,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/你的用户名/travel_assistant.git
-cd travel_assistant
+git clone https://github.com/Aby5s/Travel_Agent.git
+cd Travel_Agent
 ```
 
 ### 2. 配置环境变量
