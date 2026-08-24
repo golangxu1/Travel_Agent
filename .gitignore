@@ -2,6 +2,11 @@
 travel/
 venv/
 
+# 本地环境变量（仅提交示例模板）
+.env
+.env.*
+!.env.example
+
 # Python 缓存
 __pycache__/
 *.pyc

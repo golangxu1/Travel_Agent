@@ -119,16 +119,20 @@ cd Travel_Agent
 
 ### 2. 配置环境变量
 
-编辑根目录 `.env` 文件，填入你的 API 密钥：
+复制环境变量模板并填入你的 API 密钥：
+
+```bash
+cp .env.example .env  # Windows PowerShell: Copy-Item .env.example .env
+```
 
 ```env
 # 模型配置（三选一）
 MODEL_PROVIDER=deepseek
 MODEL_ID=deepseek-chat
-MODEL_API_KEY=你的密钥
+MODEL_API_KEY=
 
 # 高德地图
-AMAP_API_KEY=你的高德Key
+AMAP_API_KEY=
 ```
 
 ### 3. 启动后端
@@ -175,7 +179,7 @@ travel_assistant/
 ├── evaluation/
 │   ├── run_eval.py          # 自动化测评脚本
 │   └── 测评方案.md
-├── .env                     # 环境变量配置
+├── .env.example             # 环境变量模板（复制为 .env 后填写）
 └── requirements.txt
 ```
 
