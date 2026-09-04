@@ -1,0 +1,16 @@
+data: {"stage":"weather","content":"## 天气信息\n5 月初天气温和，建议携带薄外套。"}
+
+data: {"stage":"destination","content":"## 成都概览\n成都以美食与历史文化闻名。"}
+
+data: {"stage":"accommodation","content":"## 住宿推荐\n推荐春熙路和宽窄巷子附近住宿。"}
+
+data: {"stage":"itinerary","content":"## Day 1\n- 春熙路：品尝当地美食\n\n## Day 2\n- 武侯祠：了解三国文化"}
+
+data: {"stage":"itinerary_pois","content":{"pois":[{"day":1,"name":"春熙路","duration":"2 小时","price":"免费","description":"城市商业与美食街区。","location":"104.081700,30.657400","address":"四川省成都市锦江区春熙路","photo":"/api/media/poi/poi-chunxi/photo","map_thumb":"/api/media/poi/poi-chunxi/map"},{"day":2,"name":"武侯祠","duration":"2.5 小时","price":"50 元","description":"纪念诸葛亮和刘备的历史文化景区。","location":"104.043300,30.649700","address":"四川省成都市武侯区武侯祠大街","photo":"https://images.example.test/poi/wuhouci.jpg","map_thumb":"/api/media/poi/poi-wuhouci/map"}],"maps":{"1":"/api/media/maps/day/1","2":"/api/media/maps/day/2"}}}
+
+data: {"stage":"budget","content":"## 预算明细\n两人四日预计 5200 元。"}
+
+data: {"stage":"trace","trace_id":"a1b2c3d4"}
+
+data: [DONE]
+

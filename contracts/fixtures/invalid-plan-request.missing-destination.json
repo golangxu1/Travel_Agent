@@ -1,0 +1,9 @@
+{
+  "origin": "北京",
+  "start_date": "2026-05-01",
+  "end_date": "2026-05-04",
+  "transport": "混合",
+  "preferences": ["景色"],
+  "people": 2,
+  "budget_level": null
+}

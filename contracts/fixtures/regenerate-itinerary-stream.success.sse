@@ -1,0 +1,6 @@
+data: {"stage":"itinerary","content":"## Day 1\n- 春熙路：品尝当地美食\n\n## Day 2\n- 杜甫草堂：慢游并了解诗圣文化\n\n## Day 3\n- 武侯祠：参观历史遗迹"}
+
+data: {"stage":"itinerary_pois","content":{"pois":[{"day":2,"name":"杜甫草堂","duration":"2 小时","price":"50 元","description":"纪念杜甫的文化景点。","location":"104.028600,30.672600","address":"四川省成都市青羊区青华路","photo":"/api/media/poi/poi-dufu/photo","map_thumb":"/api/media/poi/poi-dufu/map"}],"maps":{"2":"/api/media/maps/day/2"}}}
+
+data: [DONE]
+

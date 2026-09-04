@@ -1,0 +1,10 @@
+{
+  "detail": [
+    {
+      "type": "missing",
+      "loc": ["body", "destination"],
+      "msg": "Field required",
+      "input": null
+    }
+  ]
+}

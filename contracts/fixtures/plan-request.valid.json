@@ -1,0 +1,10 @@
+{
+  "origin": "北京",
+  "destination": "成都",
+  "start_date": "2026-05-01",
+  "end_date": "2026-05-04",
+  "transport": "混合",
+  "preferences": ["美食", "文化"],
+  "people": 2,
+  "budget_level": "中等"
+}
