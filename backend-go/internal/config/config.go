@@ -21,6 +21,8 @@ type Config struct {
 	ModelTimeout    time.Duration
 	FakeStageDelay  time.Duration
 	MaxOutputTokens int
+	AMapAPIKey      string
+	PublicBaseURL   string
 }
 
 // Load reads optional local settings without mutating process environment.
@@ -77,6 +79,11 @@ func Load() Config {
 		}
 	}
 
+	publicBaseURL := os.Getenv("TRAVEL_AGENT_PUBLIC_BASE_URL")
+	if publicBaseURL == "" {
+		publicBaseURL = "http://localhost:8001"
+	}
+
 	return Config{
 		Address:         address,
 		Mode:            mode,
@@ -87,5 +94,7 @@ func Load() Config {
 		ModelTimeout:    modelTimeout,
 		FakeStageDelay:  stageDelay,
 		MaxOutputTokens: maxOutputTokens,
+		AMapAPIKey:      os.Getenv("AMAP_API_KEY"),
+		PublicBaseURL:   publicBaseURL,
 	}
 }

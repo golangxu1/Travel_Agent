@@ -1,13 +1,13 @@
 # Go 后端迁移注意事项与实施方案
 
-> 状态：Go 后端阶段 2 已开始并完成第一批实现。真实 LLM Provider、五模块 Prompt、三阶段编排和本地 mock 测试已加入；高德、追踪持久化、完整路由迁移和前端切换尚未完成。
+> 状态：Go 后端阶段 3 已完成第一批实现。真实 LLM Provider、五模块 Prompt、三阶段编排、高德 REST、POI 补全和受控媒体代理已加入；追踪持久化和前端切换尚未完成。
 >
 > 目标：将 Python/FastAPI + Agno 后端渐进式迁移到 Go；在首版中维持现有 React 前端可用，并同时修复会影响安全、稳定性和部署的关键问题。
 
 当前工作树中可复用、但尚未等同于生产实现的前置产物：
 
 - `contracts/`：HTTP/SSE 契约说明和确定性 fixture。
-- `backend-go/`：独立 Go module、`net/http` 路由、可取消 fake/real planner、输入校验和单元测试；目前只覆盖计划/重生成，图片、追踪和媒体代理仍未迁移。
+- `backend-go/`：独立 Go module、`net/http` 路由、可取消 fake/real planner、输入校验、高德/POI 适配器和单元测试；追踪存储仍未迁移。
 
 本轮已在 `backend-go/` 完成：
 
@@ -15,6 +15,8 @@
 - OpenAI-compatible、DeepSeek 和 Anthropic HTTP Provider，凭据只从进程环境读取。
 - 五个模块的 Prompt 与用户数据分隔，Phase 1 天气/目的地/住宿并行，Phase 2 行程，Phase 3 预算。
 - 旧 `---POIS---` 协议解析和 `itinerary_pois` 兼容事件；LLM/编排器本地 mock 测试。
+- 高德 REST 地理编码、POI 搜索、POI 坐标/地址补全和日地图计算；最大 20 个 POI 串行补全，避免无限外部调用扇出。
+- `/api/images`、`/api/poi-photo`、`/api/maps/static`；高德 Key 仅保留服务端，图片和地图使用短期签名 token，图片代理限制高德 HTTPS 域名、公开 IP、重定向次数、图片类型和 5 MiB 响应上限。
 
 Go 服务默认监听 `:8001`，Python 服务继续作为 `:8000` 的生产/回滚基线。当前已使用现有 Go 工具链验证 `go test ./...` 和 `go vet ./...`；`go test -race ./...` 因当前环境未启用 CGO 暂未执行成功。前端当前也没有安装可用的 npm 依赖，`npm run lint` 尚未执行成功。
 
@@ -49,7 +51,7 @@ flowchart LR
 `contracts/` 和 `backend-go/` 是有价值的迁移前置工作，但不应被误认为已经完成 Go 迁移：
 
 - Go 骨架当前使用 fake planner，不能证明真实模型提示词、工具调用、POI 补全和预算结果与 Python 一致。
-- Go 骨架的 README 已明确 `/api/images`、`/api/traces` 和 `/api/poi-photo` 仍由 Python 提供，因此它暂时不能作为前端的完整后端替换。
+- Go 端已覆盖 `/api/images`、POI 图片和静态地图，但 `/api/traces` 与 `/api/traces/{id}` 仍由 Python 服务提供，因此它暂时不能作为前端的完整后端替换。
 - 契约 fixture 固定了正常流和部分错误形状，但高德、媒体代理、追踪持久化、鉴权、限流和取消传播仍需独立测试。
 - `backend/team/travel_team.py` 不是当前运行入口，且其成员和输出协议与 `backend/main.py` 不一致；迁移时应以运行入口和实际 HTTP 行为为准。
 
@@ -178,7 +180,7 @@ backend-go/
 
 **当前结果：** Provider、Prompt、编排、流式/重生成和取消路径已具备本地 mock 测试；真实模型小样本尚未执行。阶段整体仍需等待高德数据、追踪数据和真实模型回归。
 
-### 阶段 3：高德、POI 与媒体安全替换
+### 阶段 3：高德、POI 与媒体安全替换（第一批已完成）
 
 - 用强类型高德 REST Client 取代请求期间的 `npx` MCP；增加缓存、限额、重试退避、熔断和可观测指标。
 - 让行程模型优先返回结构化 JSON：Markdown、每日 POI、价格/时长等字段分离，并作 schema 校验；旧 `---POIS---` parser 作为短期降级。
@@ -186,6 +188,8 @@ backend-go/
 - 实施安全图片/地图代理，彻底移除服务端 Key 直出。
 
 **完成门槛：** SSRF、私网重定向、大图片、非图片类型和 Key 泄露均有自动化回归；POI 结构化协议与旧前端兼容。
+
+**当前结果：** 高德 REST Client、POI 补全、地图/图片受控代理以及 Key/token/非图片防护的本地 mock 回归已完成。媒体 token 为进程内短期状态，因此服务重启后旧媒体 URL 会失效；生产多实例部署前需要共享 token 存储或把媒体代理固定为同一实例。
 
 ### 阶段 4：追踪存储与前端适配
 

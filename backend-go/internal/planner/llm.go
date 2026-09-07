@@ -22,16 +22,21 @@ type LLMPlanner struct {
 	Model           string
 	MaxOutputTokens int
 	StageTimeout    time.Duration
+	POIEnricher     POIEnricher
 }
 
-func NewLLMPlanner(client llm.Client, model string, maxOutputTokens int, stageTimeout time.Duration) *LLMPlanner {
+func NewLLMPlanner(client llm.Client, model string, maxOutputTokens int, stageTimeout time.Duration, enrichers ...POIEnricher) *LLMPlanner {
 	if maxOutputTokens <= 0 {
 		maxOutputTokens = 4096
 	}
 	if stageTimeout <= 0 {
 		stageTimeout = 120 * time.Second
 	}
-	return &LLMPlanner{Client: client, Model: model, MaxOutputTokens: maxOutputTokens, StageTimeout: stageTimeout}
+	planner := &LLMPlanner{Client: client, Model: model, MaxOutputTokens: maxOutputTokens, StageTimeout: stageTimeout}
+	if len(enrichers) > 0 {
+		planner.POIEnricher = enrichers[0]
+	}
+	return planner
 }
 
 func (p *LLMPlanner) Plan(ctx context.Context, req domain.PlanRequest) (domain.PlanResponse, error) {
@@ -139,7 +144,7 @@ func (p *LLMPlanner) runPlan(ctx context.Context, req domain.PlanRequest, events
 		return err
 	}
 	if len(pois) > 0 {
-		payload := map[string]any{"pois": pois, "maps": map[string]string{}}
+		payload := p.enrichPOIs(ctx, req.Destination, pois)
 		if err := emit(ctx, events, domain.StageEvent{Stage: "itinerary_pois", Content: payload}); err != nil {
 			return err
 		}
@@ -190,7 +195,7 @@ func (p *LLMPlanner) RegenerateStream(ctx context.Context, req domain.Regenerate
 				return
 			}
 			if len(pois) > 0 {
-				_ = emit(ctx, events, domain.StageEvent{Stage: "itinerary_pois", Content: map[string]any{"pois": pois, "maps": map[string]string{}}})
+				_ = emit(ctx, events, domain.StageEvent{Stage: "itinerary_pois", Content: p.enrichPOIs(ctx, req.Destination, pois)})
 			}
 		} else {
 			_ = emit(ctx, events, domain.StageEvent{Stage: req.Module, Content: content})
@@ -222,24 +227,12 @@ func emit(ctx context.Context, events chan<- domain.StageEvent, event domain.Sta
 	}
 }
 
-type POI struct {
-	Day         int    `json:"day"`
-	Name        string `json:"name"`
-	Duration    string `json:"duration"`
-	Price       string `json:"price"`
-	Description string `json:"description"`
-	Location    string `json:"location"`
-	Address     string `json:"address"`
-	Photo       string `json:"photo"`
-	MapThumb    string `json:"map_thumb,omitempty"`
-}
-
-func parseItinerary(raw string) (string, []POI) {
+func parseItinerary(raw string) (string, []domain.POI) {
 	parts := strings.SplitN(raw, "---POIS---", 2)
 	if len(parts) != 2 {
 		return raw, nil
 	}
-	var pois []POI
+	var pois []domain.POI
 	for _, line := range strings.Split(parts[1], "\n") {
 		columns := strings.SplitN(strings.TrimSpace(line), "|", 5)
 		if len(columns) != 5 {
@@ -249,9 +242,27 @@ func parseItinerary(raw string) (string, []POI) {
 		if err != nil || day < 1 || strings.TrimSpace(columns[1]) == "" {
 			continue
 		}
-		pois = append(pois, POI{Day: day, Name: strings.TrimSpace(columns[1]), Duration: strings.TrimSpace(columns[2]), Price: strings.TrimSpace(columns[3]), Description: strings.TrimSpace(columns[4])})
+		pois = append(pois, domain.POI{Day: day, Name: strings.TrimSpace(columns[1]), Duration: strings.TrimSpace(columns[2]), Price: strings.TrimSpace(columns[3]), Description: strings.TrimSpace(columns[4])})
 	}
 	return strings.TrimSpace(parts[0]), pois
+}
+
+func (p *LLMPlanner) enrichPOIs(ctx context.Context, city string, pois []domain.POI) domain.ItineraryPOIs {
+	payload := domain.ItineraryPOIs{POIs: pois, Maps: map[string]string{}}
+	if p.POIEnricher == nil {
+		return payload
+	}
+	enriched, err := p.POIEnricher.EnrichPOIs(ctx, city, pois)
+	if err != nil {
+		return payload
+	}
+	if enriched.POIs == nil {
+		enriched.POIs = pois
+	}
+	if enriched.Maps == nil {
+		enriched.Maps = map[string]string{}
+	}
+	return enriched
 }
 
 func stripThinking(content string) string {

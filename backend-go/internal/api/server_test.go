@@ -206,6 +206,52 @@ func TestPlanStreamCancellationStopsPlanner(t *testing.T) {
 	}
 }
 
+func TestImagesReturnsCompatibleMediaShape(t *testing.T) {
+	location := "120.1551,30.2741"
+	media := &fakeMedia{images: domain.ImageSearchResult{
+		Images:     []domain.ImageEntry{{URL: "http://go.test/api/maps/static?token=map", Alt: "杭州 - 城市全景"}},
+		ScenicPool: []domain.ImageEntry{{URL: "http://go.test/api/poi-photo?token=photo", Alt: "西湖"}},
+		Location:   &location,
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api/images?query=%E6%9D%AD%E5%B7%9E", nil)
+	recorder := httptest.NewRecorder()
+	NewServer(nil, media).Routes().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"scenic_pool"`) || strings.Contains(recorder.Body.String(), "secret") {
+		t.Fatalf("unexpected response: %s", recorder.Body.String())
+	}
+	if media.query != "杭州" || media.count != 4 || media.poolLimit != 24 {
+		t.Fatalf("media arguments = %q/%d/%d", media.query, media.count, media.poolLimit)
+	}
+}
+
+func TestImagesRejectsOutOfRangeParameters(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/images?query=%E6%9D%AD%E5%B7%9E&pool_limit=25", nil)
+	recorder := httptest.NewRecorder()
+	NewServer(nil).Routes().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"pool_limit"`) {
+		t.Fatalf("status/body = %d/%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestMediaProxyOnlyAcceptsOpaqueTokens(t *testing.T) {
+	media := &fakeMedia{photo: domain.MediaResponse{ContentType: "image/jpeg", Body: []byte("jpeg")}}
+	server := NewServer(nil, media).Routes()
+
+	valid := httptest.NewRecorder()
+	server.ServeHTTP(valid, httptest.NewRequest(http.MethodGet, "/api/poi-photo?token=opaque-token", nil))
+	if valid.Code != http.StatusOK || valid.Header().Get("X-Content-Type-Options") != "nosniff" || valid.Body.String() != "jpeg" {
+		t.Fatalf("valid proxy = %d, headers=%v, body=%q", valid.Code, valid.Header(), valid.Body.String())
+	}
+	invalid := httptest.NewRecorder()
+	server.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/poi-photo?url=https://evil.example/image.jpg", nil))
+	if invalid.Code != http.StatusNotFound || media.photoToken != "opaque-token" {
+		t.Fatalf("untrusted request status/token = %d/%q", invalid.Code, media.photoToken)
+	}
+}
+
 func normalizeNewlines(value string) string {
 	return strings.ReplaceAll(value, "\r\n", "\n")
 }
@@ -227,4 +273,29 @@ func (failingStreamPlanner) Stream(context.Context, domain.PlanRequest) (*planne
 
 func (failingStreamPlanner) RegenerateStream(context.Context, domain.RegenerateRequest) (*planner.EventStream, error) {
 	return failingStreamPlanner{}.Stream(context.Background(), domain.PlanRequest{})
+}
+
+type fakeMedia struct {
+	images     domain.ImageSearchResult
+	imageErr   error
+	photo      domain.MediaResponse
+	staticMap  domain.MediaResponse
+	query      string
+	count      int
+	poolLimit  int
+	photoToken string
+}
+
+func (m *fakeMedia) SearchImages(_ context.Context, query string, count, poolLimit int) (domain.ImageSearchResult, error) {
+	m.query, m.count, m.poolLimit = query, count, poolLimit
+	return m.images, m.imageErr
+}
+
+func (m *fakeMedia) ProxyPhoto(_ context.Context, token string) (domain.MediaResponse, error) {
+	m.photoToken = token
+	return m.photo, nil
+}
+
+func (m *fakeMedia) ProxyStaticMap(context.Context, string) (domain.MediaResponse, error) {
+	return m.staticMap, nil
 }

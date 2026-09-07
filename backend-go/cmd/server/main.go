@@ -13,6 +13,7 @@ import (
 	"travel-agent/backend-go/internal/api"
 	"travel-agent/backend-go/internal/config"
 	"travel-agent/backend-go/internal/planner"
+	"travel-agent/backend-go/internal/provider/amap"
 	"travel-agent/backend-go/internal/provider/llm"
 )
 
@@ -25,10 +26,14 @@ func main() {
 	} else {
 		servicePlanner = &planner.FakePlanner{StageDelay: cfg.FakeStageDelay}
 	}
+	mapClient := amap.NewClient(cfg.AMapAPIKey, cfg.PublicBaseURL)
+	if llmPlanner, ok := servicePlanner.(*planner.LLMPlanner); ok {
+		llmPlanner.POIEnricher = mapClient
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           api.NewServer(servicePlanner).Routes(),
+		Handler:           api.NewServer(servicePlanner, mapClient).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      5 * time.Minute,

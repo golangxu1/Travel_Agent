@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"travel-agent/backend-go/internal/domain"
@@ -24,26 +25,128 @@ const (
 // net/http so the first migration stage has no framework or dependency lock-in.
 type Server struct {
 	Planner      planner.Planner
+	Media        MediaService
 	MaxBodyBytes int64
 }
 
-func NewServer(p planner.Planner) *Server {
+// MediaService covers the optional AMap and media-proxy boundary. Keeping it
+// behind this small interface lets API tests avoid network access entirely.
+type MediaService interface {
+	SearchImages(context.Context, string, int, int) (domain.ImageSearchResult, error)
+	ProxyPhoto(context.Context, string) (domain.MediaResponse, error)
+	ProxyStaticMap(context.Context, string) (domain.MediaResponse, error)
+}
+
+func NewServer(p planner.Planner, media ...MediaService) *Server {
 	if p == nil {
 		p = planner.NewFakePlanner()
 	}
-	return &Server{Planner: p, MaxBodyBytes: defaultMaxBodyBytes}
+	server := &Server{Planner: p, MaxBodyBytes: defaultMaxBodyBytes}
+	if len(media) > 0 {
+		server.Media = media[0]
+	}
+	return server
 }
 
 // Routes returns the compatibility routes implemented by the phase-0 Go
-// service. Images and traces remain owned by the Python service until their
-// repositories and security boundaries are migrated in later phases.
+// service. Trace storage remains owned by the Python service until its
+// repository and access-control boundaries are migrated in a later phase.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.health)
 	mux.HandleFunc("/api/plan", s.plan)
 	mux.HandleFunc("/api/plan/stream", s.planStream)
 	mux.HandleFunc("/api/plan/regenerate", s.planRegenerate)
+	mux.HandleFunc("/api/images", s.images)
+	mux.HandleFunc("/api/poi-photo", s.poiPhoto)
+	mux.HandleFunc("/api/maps/static", s.staticMap)
 	return mux
+}
+
+func (s *Server) images(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("query"))
+	if query == "" || len([]rune(query)) > 100 {
+		writeRequestError(w, &domain.ValidationError{Field: "query", Message: "必须是 1 到 100 个字符"})
+		return
+	}
+	count, err := boundedQueryInt(r, "count", 4, 1, 4)
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	poolLimit, err := boundedQueryInt(r, "pool_limit", 24, 1, 24)
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	if s.Media == nil {
+		writeJSON(w, http.StatusOK, domain.ImageSearchResult{Images: []domain.ImageEntry{}, ScenicPool: []domain.ImageEntry{}, Location: nil})
+		return
+	}
+	result, err := s.Media.SearchImages(r.Context(), query, count, poolLimit)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, requestError{Success: false, Code: "media_unavailable", Error: "地图服务暂时不可用，请稍后重试。"})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) poiPhoto(w http.ResponseWriter, r *http.Request) {
+	s.proxyMedia(w, r, "photo")
+}
+
+func (s *Server) staticMap(w http.ResponseWriter, r *http.Request) {
+	s.proxyMedia(w, r, "static-map")
+}
+
+func (s *Server) proxyMedia(w http.ResponseWriter, r *http.Request, kind string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" || len(token) > 256 || s.Media == nil {
+		mediaNotFound(w)
+		return
+	}
+	var (
+		media domain.MediaResponse
+		err   error
+	)
+	if kind == "photo" {
+		media, err = s.Media.ProxyPhoto(r.Context(), token)
+	} else {
+		media, err = s.Media.ProxyStaticMap(r.Context(), token)
+	}
+	if err != nil || !strings.HasPrefix(strings.ToLower(media.ContentType), "image/") || len(media.Body) == 0 {
+		mediaNotFound(w)
+		return
+	}
+	w.Header().Set("Content-Type", media.ContentType)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(media.Body)
+}
+
+func mediaNotFound(w http.ResponseWriter) {
+	writeJSON(w, http.StatusNotFound, requestError{Success: false, Code: "media_not_found", Error: "图片资源不可用"})
+}
+
+func boundedQueryInt(r *http.Request, name string, fallback, min, max int) (int, error) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < min || value > max {
+		return 0, &domain.ValidationError{Field: name, Message: fmt.Sprintf("必须在 %d 到 %d 之间", min, max)}
+	}
+	return value, nil
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

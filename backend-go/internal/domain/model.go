@@ -1,5 +1,50 @@
 package domain
 
+// POI is the frontend-compatible representation of one itinerary stop. The
+// planner initially fills the first five fields from the legacy LLM protocol;
+// the map provider may then enrich the remaining fields.
+type POI struct {
+	Day         int    `json:"day"`
+	Name        string `json:"name"`
+	Duration    string `json:"duration"`
+	Price       string `json:"price"`
+	Description string `json:"description"`
+	Location    string `json:"location"`
+	Address     string `json:"address"`
+	Photo       string `json:"photo"`
+	MapThumb    string `json:"map_thumb,omitempty"`
+}
+
+// ItineraryPOIs keeps the legacy POI event shape while allowing the provider
+// to generate server-side map URLs without disclosing its API key.
+type ItineraryPOIs struct {
+	POIs []POI             `json:"pois"`
+	Maps map[string]string `json:"maps"`
+}
+
+// ImageEntry and ImageSearchResult keep GET /api/images compatible with the
+// React client while all image URLs remain server-controlled proxies.
+type ImageEntry struct {
+	URL    string `json:"url"`
+	Thumb  string `json:"thumb"`
+	Alt    string `json:"alt"`
+	Credit string `json:"credit"`
+	Link   string `json:"link"`
+}
+
+type ImageSearchResult struct {
+	Images     []ImageEntry `json:"images"`
+	ScenicPool []ImageEntry `json:"scenic_pool"`
+	Location   *string      `json:"location"`
+}
+
+// MediaResponse deliberately carries only validated image content. Provider
+// headers, redirect locations, and upstream URLs are never forwarded.
+type MediaResponse struct {
+	ContentType string
+	Body        []byte
+}
+
 // Transport modes accepted by the legacy Python API.
 const (
 	TransportSelfDrive = "自驾"

@@ -120,5 +120,16 @@ The following routes remain available during migration:
 | `GET` | `/api/traces/{trace_id}` | `{ "trace": {...}, "spans": [...] }` |
 | `GET` | `/api/images?query=...` | `{ "images": [], "scenic_pool": [], "location": string|null }` |
 
+`GET /api/images` accepts a non-empty `query` of at most 100 characters, plus
+optional `count` (`1..4`, default `4`) and `pool_limit` (`1..24`, default
+`24`). A configured Go AMap adapter returns only Go media-proxy URLs. The
+browser must never receive an AMap API key or an upstream POI-photo URL.
+
+`GET /api/poi-photo?token=...` and `GET /api/maps/static?token=...` serve an
+image only for a short-lived opaque token issued in an earlier Go response.
+They intentionally reject the legacy arbitrary `url` query parameter. Invalid,
+expired, or unavailable media returns the stable `media_not_found` error body.
+
 The fixture set focuses on plan and regeneration bodies; these auxiliary route
-shapes should receive endpoint-level tests when their Go adapters are added.
+shapes now have endpoint-level tests and should receive HTTP fixture coverage
+when real AMap integration tests are introduced.
