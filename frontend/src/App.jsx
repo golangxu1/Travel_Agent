@@ -28,8 +28,10 @@ const BUDGET_OPTIONS = [
   { label: "💰 经济", value: "经济" },
   { label: "💳 中等", value: "中等" },
   { label: "💎 豪华", value: "豪华" },
-  { label: "🤖 AI自动估算", value: null },
+  { label: "🤖 AI自动估算", value: "__auto__" },
 ];
+
+const MAX_TRIP_DAYS = 31;
 
 const NAV_ITEMS = [
   { key: "destination",   icon: "📍", label: "目的地概览" },
@@ -85,6 +87,10 @@ export default function App() {
     if (!destination.trim()) return alert("请填写目的地");
     if (!dateRange) return alert("请选择出行日期");
     if (preferences.length === 0) return alert("请至少选择一个旅行偏好");
+    const tripDays = dateRange[1].diff(dateRange[0], "day") + 1;
+    if (tripDays > MAX_TRIP_DAYS) {
+      return alert(`行程不能超过 ${MAX_TRIP_DAYS} 天，请重新选择日期`);
+    }
 
     setPlanData({});
     setImages([]);
@@ -309,8 +315,12 @@ export default function App() {
                 </div>
                 <div className="form-group half">
                   <label>💰 预算档次</label>
-                  <Select style={{ width: "100%" }} value={budgetLevel}
-                    onChange={setBudgetLevel} options={BUDGET_OPTIONS} />
+                  <Select
+                    style={{ width: "100%" }}
+                    value={budgetLevel ?? "__auto__"}
+                    onChange={(value) => setBudgetLevel(value === "__auto__" ? null : value)}
+                    options={BUDGET_OPTIONS}
+                  />
                 </div>
               </div>
               <button className="submit-btn" onClick={handleSubmit}>
