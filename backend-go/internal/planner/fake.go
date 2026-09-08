@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"travel-agent/backend-go/internal/domain"
+	"travel-agent/backend-go/internal/trace"
 )
 
 // FakePlanner is deterministic and has no network or LLM dependency. A stage
 // delay can be supplied by tests to exercise streaming and cancellation.
 type FakePlanner struct {
-	StageDelay time.Duration
+	StageDelay      time.Duration
+	TraceRepository trace.Repository
 }
 
 func NewFakePlanner() *FakePlanner {
@@ -62,7 +64,8 @@ func (p *FakePlanner) Stream(ctx context.Context, req domain.PlanRequest) (*Even
 
 	events := make(chan domain.StageEvent)
 	errs := make(chan error, 1)
-	traceID := newTraceID()
+	recorder := beginTrace(ctx, p.TraceRepository, req)
+	traceID := recorder.traceID(newTraceID())
 	stages := []domain.StageEvent{
 		{Stage: "weather", Content: fmt.Sprintf("## 天气\n%s 至 %s 的天气概览（模拟数据）", req.StartDate, req.EndDate)},
 		{Stage: "destination", Content: fmt.Sprintf("## 目的地\n%s 的目的地概览（模拟数据）", req.Destination)},
@@ -75,16 +78,30 @@ func (p *FakePlanner) Stream(ctx context.Context, req domain.PlanRequest) (*Even
 	go func() {
 		defer close(events)
 		defer close(errs)
+		var streamErr error
+		defer func() { recorder.finish(streamErr) }()
 		for _, event := range stages {
+			started := time.Now()
 			if err := p.wait(ctx); err != nil {
+				streamErr = err
 				errs <- err
 				return
 			}
 			select {
 			case events <- event:
 			case <-ctx.Done():
+				streamErr = ctx.Err()
 				errs <- ctx.Err()
 				return
+			}
+			if event.Stage != "trace" {
+				phase := 1
+				if event.Stage == "itinerary" {
+					phase = 2
+				} else if event.Stage == "budget" {
+					phase = 3
+				}
+				recorder.span(event.Stage, phase, started, fmt.Sprint(event.Content), "success")
 			}
 		}
 	}()

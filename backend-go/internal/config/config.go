@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -23,6 +25,8 @@ type Config struct {
 	MaxOutputTokens int
 	AMapAPIKey      string
 	PublicBaseURL   string
+	TraceDBPath     string
+	AllowedOrigins  []string
 }
 
 // Load reads optional local settings without mutating process environment.
@@ -83,6 +87,19 @@ func Load() Config {
 	if publicBaseURL == "" {
 		publicBaseURL = "http://localhost:8001"
 	}
+	traceDBPath := os.Getenv("TRAVEL_AGENT_DB_PATH")
+	if traceDBPath == "" {
+		traceDBPath = filepath.Join("data", "travel-agent.db")
+	}
+	allowedOrigins := []string{"http://localhost:5173", "http://127.0.0.1:5173"}
+	if raw := os.Getenv("TRAVEL_AGENT_CORS_ORIGINS"); raw != "" {
+		allowedOrigins = allowedOrigins[:0]
+		for _, origin := range strings.Split(raw, ",") {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				allowedOrigins = append(allowedOrigins, strings.TrimRight(origin, "/"))
+			}
+		}
+	}
 
 	return Config{
 		Address:         address,
@@ -96,5 +113,7 @@ func Load() Config {
 		MaxOutputTokens: maxOutputTokens,
 		AMapAPIKey:      os.Getenv("AMAP_API_KEY"),
 		PublicBaseURL:   publicBaseURL,
+		TraceDBPath:     traceDBPath,
+		AllowedOrigins:  allowedOrigins,
 	}
 }

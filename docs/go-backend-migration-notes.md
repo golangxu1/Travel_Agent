@@ -51,7 +51,7 @@ flowchart LR
 `contracts/` 和 `backend-go/` 是有价值的迁移前置工作，但不应被误认为已经完成 Go 迁移：
 
 - Go 骨架当前使用 fake planner，不能证明真实模型提示词、工具调用、POI 补全和预算结果与 Python 一致。
-- Go 端已覆盖 `/api/images`、POI 图片和静态地图，但 `/api/traces` 与 `/api/traces/{id}` 仍由 Python 服务提供，因此它暂时不能作为前端的完整后端替换。
+- Go 端已覆盖 `/api/images`、POI 图片、静态地图以及 `/api/traces`、`/api/traces/{id}`，前端 API Client 已默认切换到 Go `localhost:8001`。
 - 契约 fixture 固定了正常流和部分错误形状，但高德、媒体代理、追踪持久化、鉴权、限流和取消传播仍需独立测试。
 - `backend/team/travel_team.py` 不是当前运行入口，且其成员和输出协议与 `backend/main.py` 不一致；迁移时应以运行入口和实际 HTTP 行为为准。
 
@@ -68,7 +68,7 @@ flowchart LR
 | P1 | 动态 `npx` MCP 运行时依赖 | 每个 Agent 都以 `npx -y @amap/amap-maps-mcp-server` 启动未锁版本的进程 | 优先使用 Go 的高德 REST 适配器；若必须保留 MCP，固定版本并以独立 sidecar 运行，不能在请求中动态下载 |
 | P1 | 外部调用无全局保护 | POI 可对每个景点发多次高德请求，未限制 POI 数或并发，也缺少缓存和熔断 | 限制 POI 数、并发和全链路时限；加入连接池、重试退避、缓存、错误分类和熔断策略 |
 | P1 | 追踪存储不适合多实例 | `trace_store.py` 使用相对路径 SQLite、短 UUID、每次操作新连接，无迁移/WAL/保留策略 | 单机过渡可保留 SQLite，但要用迁移、WAL、连接池、完整 UUID/ULID、索引、分页和保留策略；多实例改 PostgreSQL |
-| P1 | 前端请求状态不可靠 | `frontend/src/App.jsx` 硬编码 `localhost:8000`，手写 SSE 行解析，不支持取消；SSE 错误只写控制台，旧请求可覆盖新状态 | 抽取 API Client，使用 `VITE_API_BASE_URL`，实现健壮 SSE parser、`AbortController`、请求序号和明确的错误/取消/部分完成状态 |
+| P1 | 前端请求状态不可靠 | `frontend/src/App.jsx` 曾硬编码 `localhost:8000`，并手写 SSE 行解析 | 已抽取 API Client，使用 `VITE_API_BASE_URL`，支持分片/CRLF/多行 data、错误抛出和 AbortController 取消 |
 
 ### 还需要一并修正的现状
 
@@ -140,9 +140,9 @@ backend-go/
 
 前端不需要因后端改成 Go 而重写界面，但需要把目前写在 `App.jsx` 内的通信细节抽出来：
 
-1. 新建 API Client，统一通过 `VITE_API_BASE_URL` 或同源 `/api` 请求，去掉全部 `http://localhost:8000`。
-2. 新建 SSE 消费器，正确处理网络分片、UTF-8、CRLF、多行 `data:`、心跳、`[DONE]` 和服务器错误事件。
-3. 为生成和重生成分别保存 `AbortController` 与请求序号；用户返回、发起新计划或取消时终止旧请求，旧响应不得写入新页面状态。
+1. 已新建 API Client，统一通过 `VITE_API_BASE_URL` 或同源 `/api` 请求，去掉全部 `http://localhost:8000`。
+2. 已新建 SSE 消费器，正确处理网络分片、UTF-8、CRLF、多行 `data:`、`[DONE]` 和服务器错误事件。
+3. 已为生成和重生成分别保存 `AbortController`；用户返回或发起新计划时终止旧请求，旧响应不会继续写入页面状态。
 4. 将页面状态从单个 `loading` 布尔值改为 `idle`、`streaming`、`partial`、`succeeded`、`failed`、`cancelled`；按模块记录 `ready/error`，避免失败后显示“生成完成”。
 5. 所有 `fetch` 都检查非 2xx 响应并展示脱敏、可操作的错误；图片加载失败保留当前占位降级。
 6. `itinerary_pois` 使用明确的 TypeScript/JSDoc 数据结构；兼容旧字段，同时准备接受新协议的 `version` 与结构化 POI。

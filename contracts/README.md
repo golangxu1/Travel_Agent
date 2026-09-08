@@ -53,9 +53,9 @@ security behavior:
   frozen here for the first cut, while the Go planner should prefer a validated,
   versioned structured POI payload and retain the text parser only as a
   temporary fallback.
-- Current trace IDs are short strings (the Python store truncates UUIDs to eight
-  characters). The field remains a string for compatibility; Go may use a full
-  UUID/ULID without changing the event or response field name.
+- Go trace IDs are full opaque UUID strings. The field remains a string for
+  compatibility; clients must not infer ownership or database details from its
+  format.
 
 No fixture contains a real provider key, private address, internal exception,
 or user credential.

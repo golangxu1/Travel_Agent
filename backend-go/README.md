@@ -1,6 +1,6 @@
 # Go 后端骨架
 
-这是旅行助手迁移阶段 1/2/3 的独立 Go module。HTTP 层和编排层只使用标准库，planner 支持 fake 模式和 OpenAI-compatible/Anthropic HTTP Provider；高德 REST、POI 补全和安全图片/静态地图代理已迁移，追踪持久化仍由 Python 服务提供。
+这是旅行助手迁移阶段 1/2/3/4 的独立 Go module。HTTP 层和编排层只使用标准库，planner 支持 fake 模式和 OpenAI-compatible/Anthropic HTTP Provider；高德 REST、POI 补全、安全图片/静态地图代理和 SQLite trace 持久化已迁移。
 
 ## 本地运行
 
@@ -8,6 +8,7 @@
 
 ```powershell
 cd backend-go
+go get modernc.org/sqlite@v1.36.0
 go test ./...
 go vet ./...
 go run ./cmd/server
@@ -16,6 +17,10 @@ go run ./cmd/server
 先用 `go version` 确认安装结果；本项目不自动安装 Go、调整 PATH 或写入系统配置。
 
 默认监听 `http://localhost:8001`，可用 `TRAVEL_AGENT_GO_ADDR=:9001` 修改地址。设置 `TRAVEL_AGENT_MODE=fake` 和 `TRAVEL_AGENT_FAKE_STAGE_DELAY_MS=50` 可观察流式阶段和取消行为。
+
+本地开发默认允许 `http://localhost:5173` 和 `http://127.0.0.1:5173` 跨域访问。部署到其他前端域名时，可在启动进程前手动设置逗号分隔的 `TRAVEL_AGENT_CORS_ORIGINS`；服务端按精确域名匹配，不允许通配来源。
+
+默认 trace 数据库位于 Go 模块目录下的 `data/travel-agent.db`，首次启动会自动执行嵌入式 migrations。也可以手动设置 `TRAVEL_AGENT_DB_PATH` 指向其他路径；本轮不自动读取或覆盖旧 Python `trace.db`，历史数据转换需要单独核对后执行。
 
 ## 高德地图配置
 
@@ -60,7 +65,9 @@ go run ./cmd/server
 - `GET /api/images?query=城市`
 - `GET /api/poi-photo?token=...`
 - `GET /api/maps/static?token=...`
+- `GET /api/traces?limit=20`
+- `GET /api/traces/{id}`
 
-请求字段、中文枚举和 stream 的 `data: <JSON>\n\n` / `data: [DONE]\n\n` framing 与现有 Python API 保持兼容。`/api/traces` 和 `/api/traces/{id}` 仍由 Python 服务提供，因此在 trace 迁移完成前，前端不能将全部 `/api/*` 请求统一切到 Go。
+请求字段、中文枚举和 stream 的 `data: <JSON>\n\n` / `data: [DONE]\n\n` framing 与现有 Python API 保持兼容。Trace 接口继续返回 `{traces: [...]}` 和 `{trace, spans}` 形状，但增加 `status` 与脱敏的 `error` 字段。
 
 服务端拒绝未知 JSON 字段、空值、非法日期、超过 31 天的行程、超长文本及超过 64 KiB 的请求体。错误响应使用稳定的 `success=false`、`code`、脱敏 `error`，以及校验失败时的 `fields` 字段。

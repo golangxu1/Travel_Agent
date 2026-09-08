@@ -13,6 +13,7 @@ import (
 
 	"travel-agent/backend-go/internal/domain"
 	"travel-agent/backend-go/internal/planner"
+	"travel-agent/backend-go/internal/trace"
 )
 
 const (
@@ -24,9 +25,11 @@ const (
 // Server owns HTTP handlers and the planner boundary. It intentionally uses
 // net/http so the first migration stage has no framework or dependency lock-in.
 type Server struct {
-	Planner      planner.Planner
-	Media        MediaService
-	MaxBodyBytes int64
+	Planner        planner.Planner
+	Media          MediaService
+	Traces         trace.Repository
+	MaxBodyBytes   int64
+	AllowedOrigins []string
 }
 
 // MediaService covers the optional AMap and media-proxy boundary. Keeping it
@@ -37,20 +40,25 @@ type MediaService interface {
 	ProxyStaticMap(context.Context, string) (domain.MediaResponse, error)
 }
 
-func NewServer(p planner.Planner, media ...MediaService) *Server {
+func NewServer(p planner.Planner, dependencies ...any) *Server {
 	if p == nil {
 		p = planner.NewFakePlanner()
 	}
 	server := &Server{Planner: p, MaxBodyBytes: defaultMaxBodyBytes}
-	if len(media) > 0 {
-		server.Media = media[0]
+	for _, dependency := range dependencies {
+		switch value := dependency.(type) {
+		case MediaService:
+			server.Media = value
+		case trace.Repository:
+			server.Traces = value
+		}
 	}
 	return server
 }
 
 // Routes returns the compatibility routes implemented by the phase-0 Go
-// service. Trace storage remains owned by the Python service until its
-// repository and access-control boundaries are migrated in a later phase.
+// service. Trace storage is injected separately so it can later be swapped
+// for PostgreSQL without changing the HTTP contract.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.health)
@@ -60,7 +68,89 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/images", s.images)
 	mux.HandleFunc("/api/poi-photo", s.poiPhoto)
 	mux.HandleFunc("/api/maps/static", s.staticMap)
-	return mux
+	mux.HandleFunc("/api/traces", s.traces)
+	mux.HandleFunc("/api/traces/", s.traceDetail)
+	return s.withCORS(mux)
+}
+
+func (s *Server) withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimRight(r.Header.Get("Origin"), "/")
+		allowed := origin != "" && s.originAllowed(origin)
+		if allowed {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Max-Age", "600")
+			w.Header().Add("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			if origin != "" && !allowed {
+				writeJSON(w, http.StatusForbidden, requestError{Success: false, Code: "origin_not_allowed", Error: "请求来源不允许"})
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) originAllowed(origin string) bool {
+	for _, allowed := range s.AllowedOrigins {
+		if strings.EqualFold(strings.TrimRight(allowed, "/"), origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) traces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	limit, err := boundedQueryInt(r, "limit", 20, 1, 100)
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	if s.Traces == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"traces": []trace.Trace{}})
+		return
+	}
+	items, err := s.Traces.List(r.Context(), limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, requestError{Success: false, Code: "trace_unavailable", Error: "追踪数据暂时不可用，请稍后重试。"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"traces": items})
+}
+
+func (s *Server) traceDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/traces/")
+	if id == "" || strings.Contains(id, "/") || len(id) > 128 {
+		writeJSON(w, http.StatusBadRequest, requestError{Success: false, Code: "invalid_trace_id", Error: "追踪 ID 无效"})
+		return
+	}
+	if s.Traces == nil {
+		writeJSON(w, http.StatusNotFound, requestError{Success: false, Code: "trace_not_found", Error: "追踪记录不存在"})
+		return
+	}
+	item, err := s.Traces.Get(r.Context(), id)
+	if errors.Is(err, trace.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, requestError{Success: false, Code: "trace_not_found", Error: "追踪记录不存在"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, requestError{Success: false, Code: "trace_unavailable", Error: "追踪数据暂时不可用，请稍后重试。"})
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) images(w http.ResponseWriter, r *http.Request) {

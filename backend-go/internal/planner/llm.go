@@ -12,6 +12,7 @@ import (
 	"travel-agent/backend-go/internal/agent"
 	"travel-agent/backend-go/internal/domain"
 	"travel-agent/backend-go/internal/provider/llm"
+	"travel-agent/backend-go/internal/trace"
 )
 
 // LLMPlanner implements the same observable three-phase flow as the Python
@@ -23,6 +24,7 @@ type LLMPlanner struct {
 	MaxOutputTokens int
 	StageTimeout    time.Duration
 	POIEnricher     POIEnricher
+	TraceRepository trace.Repository
 }
 
 func NewLLMPlanner(client llm.Client, model string, maxOutputTokens int, stageTimeout time.Duration, enrichers ...POIEnricher) *LLMPlanner {
@@ -96,6 +98,13 @@ func (p *LLMPlanner) Stream(ctx context.Context, req domain.PlanRequest) (*Event
 }
 
 func (p *LLMPlanner) runPlan(ctx context.Context, req domain.PlanRequest, events chan<- domain.StageEvent) error {
+	var runErr error
+	recorder := beginTrace(ctx, p.TraceRepository, req)
+	defer func() { recorder.finish(runErr) }()
+	traceID := newTraceID()
+	if recorder != nil {
+		traceID = recorder.id
+	}
 	type result struct {
 		module  string
 		content string
@@ -109,7 +118,13 @@ func (p *LLMPlanner) runPlan(ctx context.Context, req domain.PlanRequest, events
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			started := time.Now()
 			content, err := p.complete(ctx, module, req, "", "")
+			if err == nil {
+				recorder.span(module, 1, started, content, "success")
+			} else {
+				recorder.span(module, 1, started, "", "failed")
+			}
 			results <- result{module: module, content: content, err: err}
 		}()
 	}
@@ -121,19 +136,23 @@ func (p *LLMPlanner) runPlan(ctx context.Context, req domain.PlanRequest, events
 	phaseOne := make(map[string]string, len(modules))
 	for result := range results {
 		if result.err != nil {
+			runErr = result.err
 			return result.err
 		}
 		phaseOne[result.module] = result.content
 	}
 	for _, module := range modules {
 		if err := emit(ctx, events, domain.StageEvent{Stage: module, Content: phaseOne[module]}); err != nil {
+			runErr = err
 			return err
 		}
 	}
 
 	itineraryContext := "天气\n" + agent.TrimContext(phaseOne["weather"], 300) + "\n\n目的地\n" + agent.TrimContext(phaseOne["destination"], 500)
+	itineraryStarted := time.Now()
 	itinerary, err := p.complete(ctx, "itinerary", req, itineraryContext, "")
 	if err != nil {
+		runErr = err
 		return err
 	}
 	itineraryMarkdown, pois := parseItinerary(itinerary)
@@ -141,24 +160,39 @@ func (p *LLMPlanner) runPlan(ctx context.Context, req domain.PlanRequest, events
 		itineraryMarkdown = itinerary
 	}
 	if err := emit(ctx, events, domain.StageEvent{Stage: "itinerary", Content: itineraryMarkdown}); err != nil {
+		runErr = err
 		return err
+	}
+	if recorder != nil {
+		recorder.span("itinerary", 2, itineraryStarted, itineraryMarkdown, "success")
 	}
 	if len(pois) > 0 {
 		payload := p.enrichPOIs(ctx, req.Destination, pois)
 		if err := emit(ctx, events, domain.StageEvent{Stage: "itinerary_pois", Content: payload}); err != nil {
+			runErr = err
 			return err
 		}
 	}
 
 	budgetContext := "行程\n" + agent.TrimContext(itineraryMarkdown, 800) + "\n\n住宿\n" + agent.TrimContext(phaseOne["accommodation"], 500)
+	budgetStarted := time.Now()
 	budget, err := p.complete(ctx, "budget", req, budgetContext, "")
 	if err != nil {
+		runErr = err
 		return err
 	}
 	if err := emit(ctx, events, domain.StageEvent{Stage: "budget", Content: budget}); err != nil {
+		runErr = err
 		return err
 	}
-	return emit(ctx, events, domain.StageEvent{Stage: "trace", TraceID: newTraceID()})
+	if recorder != nil {
+		recorder.span("budget", 3, budgetStarted, budget, "success")
+	}
+	if err := emit(ctx, events, domain.StageEvent{Stage: "trace", TraceID: traceID}); err != nil {
+		runErr = err
+		return err
+	}
+	return nil
 }
 
 func (p *LLMPlanner) RegenerateStream(ctx context.Context, req domain.RegenerateRequest) (*EventStream, error) {

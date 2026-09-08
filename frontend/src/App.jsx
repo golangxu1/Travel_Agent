@@ -5,6 +5,7 @@ import dayjs from "dayjs";
 import zhCN from "antd/locale/zh_CN";
 import "antd/dist/reset.css";
 import "./App.css";
+import { fetchJSON, jsonRequest, streamSSE } from "./api/client";
 
 const { RangePicker } = DatePicker;
 
@@ -41,6 +42,12 @@ const NAV_ITEMS = [
 const PHASE_COLORS = { 1: "#3b82f6", 2: "#10b981", 3: "#f59e0b" };
 const PHASE_LABELS = { 1: "Phase 1", 2: "Phase 2", 3: "Phase 3" };
 
+function selectStripImages(pool) {
+  if (!pool?.length) return [];
+  if (pool.length <= 3) return pool.slice(0, 3);
+  return [...pool].sort(() => Math.random() - 0.5).slice(0, 3);
+}
+
 export default function App() {
   const [origin, setOrigin] = useState("");
   const [destination, setDestination] = useState("");
@@ -70,6 +77,8 @@ export default function App() {
   const [regenDone, setRegenDone] = useState(null);
 
   const firstStageRef = useRef(false);
+  const planAbortRef = useRef(null);
+  const regenerateAbortRef = useRef(null);
 
   const handleSubmit = async () => {
     if (!origin.trim()) return alert("请填写出发地");
@@ -90,9 +99,11 @@ export default function App() {
     setPage("result");
     setLoading(true);
     firstStageRef.current = false;
+    planAbortRef.current?.abort();
+    const requestController = new AbortController();
+    planAbortRef.current = requestController;
 
-    fetch(`http://localhost:8000/api/images?query=${encodeURIComponent(destination.trim())}`)
-      .then((r) => r.json())
+    fetchJSON(`/api/images?query=${encodeURIComponent(destination.trim())}`, { signal: requestController.signal })
       .then((data) => {
         setImages(data.images || []);
         const pool =
@@ -100,14 +111,12 @@ export default function App() {
             ? data.scenic_pool
             : (data.images || []).slice(1);
         setScenicPool(pool);
+        setStripImages(selectStripImages(pool));
       })
       .catch(() => {});
 
     try {
-      const response = await fetch("http://localhost:8000/api/plan/stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      await streamSSE("/api/plan/stream", jsonRequest({
           origin: origin.trim(),
           destination: destination.trim(),
           start_date: dateRange[0].format("YYYY-MM-DD"),
@@ -116,55 +125,27 @@ export default function App() {
           preferences,
           people,
           budget_level: budgetLevel,
-        }),
-      });
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop();
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const payload = line.slice(6).trim();
-          if (payload === "[DONE]") continue;
-
-          try {
-            const parsed = JSON.parse(payload);
-            if (parsed.error) {
-              console.error("SSE error:", parsed.error);
-              continue;
+        }, requestController.signal), (parsed) => {
+          if (parsed.stage === "trace" && parsed.trace_id) {
+            setTraceId(parsed.trace_id);
+            return;
+          }
+          if (parsed.stage === "itinerary_pois" && parsed.content) {
+            setPoiData(parsed.content);
+            return;
+          }
+          if (parsed.stage && parsed.content) {
+            setPlanData((prev) => ({ ...prev, [parsed.stage]: parsed.content }));
+            if (!firstStageRef.current) {
+              firstStageRef.current = true;
+              setActiveNav(parsed.stage);
             }
-            if (parsed.stage === "trace" && parsed.trace_id) {
-              setTraceId(parsed.trace_id);
-              continue;
-            }
-            if (parsed.stage === "itinerary_pois" && parsed.content) {
-              setPoiData(parsed.content);
-              continue;
-            }
-            if (parsed.stage && parsed.content) {
-              setPlanData((prev) => ({ ...prev, [parsed.stage]: parsed.content }));
-              if (!firstStageRef.current) {
-                firstStageRef.current = true;
-                setActiveNav(parsed.stage);
-              }
-            }
-          } catch { /* skip malformed SSE lines */ }
-        }
-      }
+          }
+        });
 
       setLoading(false);
     } catch (err) {
+      if (err.name === "AbortError") return;
       console.error("Stream failed:", err);
       setLoading(false);
       alert("生成失败，请检查后端服务是否正常");
@@ -173,6 +154,10 @@ export default function App() {
   };
 
   const handleBack = () => {
+    planAbortRef.current?.abort();
+    regenerateAbortRef.current?.abort();
+    planAbortRef.current = null;
+    regenerateAbortRef.current = null;
     setPage("home");
     setPlanData({});
     setImages([]);
@@ -183,6 +168,7 @@ export default function App() {
     setTraceId(null);
     setTraceData(null);
     setRegenDone(null);
+    setRegenerating(null);
     setLoading(false);
   };
 
@@ -190,12 +176,12 @@ export default function App() {
     if (!feedback.trim() || regenerating) return;
     setRegenerating(module);
     setFeedbackText("");
+    regenerateAbortRef.current?.abort();
+    const requestController = new AbortController();
+    regenerateAbortRef.current = requestController;
 
     try {
-      const response = await fetch("http://localhost:8000/api/plan/regenerate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      await streamSSE("/api/plan/regenerate", jsonRequest({
           module,
           feedback: feedback.trim(),
           origin: origin.trim(),
@@ -207,46 +193,18 @@ export default function App() {
           people,
           budget_level: budgetLevel,
           context: planData,
-        }),
-      });
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop();
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const payload = line.slice(6).trim();
-          if (payload === "[DONE]") continue;
-
-          try {
-            const parsed = JSON.parse(payload);
-            if (parsed.error) {
-              console.error("Regenerate SSE error:", parsed.error);
-              continue;
-            }
-            if (parsed.stage === "itinerary_pois" && parsed.content) {
-              setPoiData(parsed.content);
-              setActiveDay(1);
-              continue;
-            }
-            if (parsed.stage && parsed.content) {
-              setPlanData((prev) => ({ ...prev, [parsed.stage]: parsed.content }));
-            }
-          } catch { /* skip malformed */ }
-        }
-      }
+        }, requestController.signal), (parsed) => {
+          if (parsed.stage === "itinerary_pois" && parsed.content) {
+            setPoiData(parsed.content);
+            setActiveDay(1);
+            return;
+          }
+          if (parsed.stage && parsed.content) {
+            setPlanData((prev) => ({ ...prev, [parsed.stage]: parsed.content }));
+          }
+        });
     } catch (err) {
+      if (err.name === "AbortError") return;
       console.error("Regenerate failed:", err);
       alert("重新生成失败，请重试");
       setRegenerating(null);
@@ -259,8 +217,7 @@ export default function App() {
 
   const openTrace = useCallback(async (id) => {
     try {
-      const resp = await fetch(`http://localhost:8000/api/traces/${id}`);
-      const data = await resp.json();
+      const data = await fetchJSON(`/api/traces/${encodeURIComponent(id)}`);
       setTraceData(data);
       setPage("trace");
     } catch {
@@ -270,8 +227,7 @@ export default function App() {
 
   const openTraceList = useCallback(async () => {
     try {
-      const resp = await fetch("http://localhost:8000/api/traces?limit=20");
-      const data = await resp.json();
+      const data = await fetchJSON("/api/traces?limit=20");
       setTraceList(data.traces || []);
       setTraceData(null);
       setPage("trace");
@@ -280,34 +236,13 @@ export default function App() {
     }
   }, []);
 
-  const pickStripFromPool = useCallback((pool) => {
-    if (!pool?.length) {
-      setStripImages([]);
-      return;
-    }
-    if (pool.length <= 3) {
-      setStripImages(pool.slice(0, 3));
-      return;
-    }
-    const shuffled = [...pool].sort(() => Math.random() - 0.5);
-    setStripImages(shuffled.slice(0, 3));
-  }, []);
-
   useEffect(() => {
-    if (page !== "result" || scenicPool.length === 0) {
-      if (page !== "result") setStripImages([]);
-      return;
-    }
-    pickStripFromPool(scenicPool);
-    const id = setInterval(() => pickStripFromPool(scenicPool), 6500);
+    if (page !== "result" || scenicPool.length === 0) return undefined;
+    const id = setInterval(() => {
+      setStripImages(selectStripImages(scenicPool));
+    }, 6500);
     return () => clearInterval(id);
-  }, [page, scenicPool, pickStripFromPool]);
-
-  useEffect(() => {
-    if (page === "trace" && traceId && !traceData) {
-      openTrace(traceId);
-    }
-  }, [page, traceId, traceData, openTrace]);
+  }, [page, scenicPool]);
 
   // ── 首页 ──────────────────────────────────────────────────────────────────
   if (page === "home") {

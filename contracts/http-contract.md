@@ -120,6 +120,13 @@ The following routes remain available during migration:
 | `GET` | `/api/traces/{trace_id}` | `{ "trace": {...}, "spans": [...] }` |
 | `GET` | `/api/images?query=...` | `{ "images": [], "scenic_pool": [], "location": string|null }` |
 
+The Go trace implementation bounds `limit` to `1..100`, returns opaque UUID
+trace IDs, and uses stable application error codes for invalid IDs, missing
+records, and storage failures. Trace records retain the legacy fields and may
+also include `status` (`running`, `success`, `failed`, or `cancelled`) and a
+sanitized `error` value (`planner_failed` or `request_cancelled`; provider
+exception details are never exposed).
+
 `GET /api/images` accepts a non-empty `query` of at most 100 characters, plus
 optional `count` (`1..4`, default `4`) and `pool_limit` (`1..24`, default
 `24`). A configured Go AMap adapter returns only Go media-proxy URLs. The

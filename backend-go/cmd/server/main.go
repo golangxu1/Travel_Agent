@@ -15,6 +15,7 @@ import (
 	"travel-agent/backend-go/internal/planner"
 	"travel-agent/backend-go/internal/provider/amap"
 	"travel-agent/backend-go/internal/provider/llm"
+	"travel-agent/backend-go/internal/trace"
 )
 
 func main() {
@@ -27,13 +28,26 @@ func main() {
 		servicePlanner = &planner.FakePlanner{StageDelay: cfg.FakeStageDelay}
 	}
 	mapClient := amap.NewClient(cfg.AMapAPIKey, cfg.PublicBaseURL)
+	traceRepo, err := trace.OpenSQLite(cfg.TraceDBPath)
+	if err != nil {
+		log.Fatalf("open trace database: %v", err)
+	}
+	defer traceRepo.Close()
+	if fake, ok := servicePlanner.(*planner.FakePlanner); ok {
+		fake.TraceRepository = traceRepo
+	}
+	if llmPlanner, ok := servicePlanner.(*planner.LLMPlanner); ok {
+		llmPlanner.TraceRepository = traceRepo
+	}
 	if llmPlanner, ok := servicePlanner.(*planner.LLMPlanner); ok {
 		llmPlanner.POIEnricher = mapClient
 	}
 
+	apiServer := api.NewServer(servicePlanner, mapClient, traceRepo)
+	apiServer.AllowedOrigins = cfg.AllowedOrigins
 	srv := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           api.NewServer(servicePlanner, mapClient).Routes(),
+		Handler:           apiServer.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      5 * time.Minute,
