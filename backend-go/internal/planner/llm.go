@@ -119,13 +119,13 @@ func (p *LLMPlanner) runPlan(ctx context.Context, req domain.PlanRequest, events
 		go func() {
 			defer wg.Done()
 			started := time.Now()
-			content, err := p.complete(ctx, module, req, "", "")
+			response, err := p.complete(ctx, module, req, "", "")
 			if err == nil {
-				recorder.span(module, 1, started, content, "success")
+				recorder.span(module, 1, started, response.Text, "success", response.InputTokens, response.OutputTokens)
 			} else {
-				recorder.span(module, 1, started, "", "failed")
+				recorder.span(module, 1, started, "", "failed", response.InputTokens, response.OutputTokens)
 			}
-			results <- result{module: module, content: content, err: err}
+			results <- result{module: module, content: response.Text, err: err}
 		}()
 	}
 	go func() {
@@ -150,21 +150,21 @@ func (p *LLMPlanner) runPlan(ctx context.Context, req domain.PlanRequest, events
 
 	itineraryContext := "天气\n" + agent.TrimContext(phaseOne["weather"], 300) + "\n\n目的地\n" + agent.TrimContext(phaseOne["destination"], 500)
 	itineraryStarted := time.Now()
-	itinerary, err := p.complete(ctx, "itinerary", req, itineraryContext, "")
+	itineraryResponse, err := p.complete(ctx, "itinerary", req, itineraryContext, "")
 	if err != nil {
 		runErr = err
 		return err
 	}
-	itineraryMarkdown, pois := parseItinerary(itinerary)
+	itineraryMarkdown, pois := parseItinerary(itineraryResponse.Text)
 	if itineraryMarkdown == "" {
-		itineraryMarkdown = itinerary
+		itineraryMarkdown = itineraryResponse.Text
 	}
 	if err := emit(ctx, events, domain.StageEvent{Stage: "itinerary", Content: itineraryMarkdown}); err != nil {
 		runErr = err
 		return err
 	}
 	if recorder != nil {
-		recorder.span("itinerary", 2, itineraryStarted, itineraryMarkdown, "success")
+		recorder.span("itinerary", 2, itineraryStarted, itineraryMarkdown, "success", itineraryResponse.InputTokens, itineraryResponse.OutputTokens)
 	}
 	if len(pois) > 0 {
 		payload := p.enrichPOIs(ctx, req.Destination, pois)
@@ -176,17 +176,18 @@ func (p *LLMPlanner) runPlan(ctx context.Context, req domain.PlanRequest, events
 
 	budgetContext := "行程\n" + agent.TrimContext(itineraryMarkdown, 800) + "\n\n住宿\n" + agent.TrimContext(phaseOne["accommodation"], 500)
 	budgetStarted := time.Now()
-	budget, err := p.complete(ctx, "budget", req, budgetContext, "")
+	budgetResponse, err := p.complete(ctx, "budget", req, budgetContext, "")
 	if err != nil {
 		runErr = err
 		return err
 	}
+	budget := budgetResponse.Text
 	if err := emit(ctx, events, domain.StageEvent{Stage: "budget", Content: budget}); err != nil {
 		runErr = err
 		return err
 	}
 	if recorder != nil {
-		recorder.span("budget", 3, budgetStarted, budget, "success")
+		recorder.span("budget", 3, budgetStarted, budget, "success", budgetResponse.InputTokens, budgetResponse.OutputTokens)
 	}
 	if err := emit(ctx, events, domain.StageEvent{Stage: "trace", TraceID: traceID}); err != nil {
 		runErr = err
@@ -207,19 +208,27 @@ func (p *LLMPlanner) RegenerateStream(ctx context.Context, req domain.Regenerate
 	go func() {
 		defer close(events)
 		defer close(errs)
+		recorder := beginTrace(ctx, p.TraceRepository, req.PlanRequest)
+		var runErr error
+		defer func() { recorder.finish(runErr) }()
+		started := time.Now()
 		contextText := contextValue(req.Context, req.Module)
 		if req.Module == "itinerary" {
 			contextText = "天气\n" + contextValue(req.Context, "weather") + "\n\n目的地\n" + contextValue(req.Context, "destination")
 		} else if req.Module == "budget" {
 			contextText = "行程\n" + contextValue(req.Context, "itinerary") + "\n\n住宿\n" + contextValue(req.Context, "accommodation")
 		}
-		content, err := p.complete(ctx, req.Module, req.PlanRequest, contextText, req.Feedback)
+		response, err := p.complete(ctx, req.Module, req.PlanRequest, contextText, req.Feedback)
 		if err != nil {
+			runErr = err
+			recorder.span(req.Module, regeneratePhase(req.Module), started, "", "failed", response.InputTokens, response.OutputTokens)
 			if ctx.Err() == nil {
 				errs <- err
 			}
 			return
 		}
+		content := response.Text
+		recorder.span(req.Module, regeneratePhase(req.Module), started, content, "success", response.InputTokens, response.OutputTokens)
 		if req.Module == "itinerary" {
 			markdown, pois := parseItinerary(content)
 			if markdown != "" {
@@ -238,18 +247,29 @@ func (p *LLMPlanner) RegenerateStream(ctx context.Context, req domain.Regenerate
 	return &EventStream{Events: events, Err: errs}, nil
 }
 
-func (p *LLMPlanner) complete(ctx context.Context, module string, req domain.PlanRequest, contextText string, feedback string) (string, error) {
+func (p *LLMPlanner) complete(ctx context.Context, module string, req domain.PlanRequest, contextText string, feedback string) (llm.Response, error) {
 	stageCtx, cancel := context.WithTimeout(ctx, p.StageTimeout)
 	defer cancel()
 	system, user := agent.Prompt(module, req, contextText, feedback)
 	response, err := p.Client.Complete(stageCtx, llm.Request{Model: p.Model, System: system, User: user, MaxOutputTokens: p.MaxOutputTokens})
 	if err != nil {
-		return "", fmt.Errorf("module %s failed: %w", module, err)
+		return response, fmt.Errorf("module %s failed: %w", module, err)
 	}
 	if strings.TrimSpace(response.Text) == "" {
-		return "", fmt.Errorf("module %s returned empty content", module)
+		return response, fmt.Errorf("module %s returned empty content", module)
 	}
-	return stripThinking(response.Text), nil
+	response.Text = stripThinking(response.Text)
+	return response, nil
+}
+
+func regeneratePhase(module string) int {
+	if module == "itinerary" {
+		return 2
+	}
+	if module == "budget" {
+		return 3
+	}
+	return 1
 }
 
 func emit(ctx context.Context, events chan<- domain.StageEvent, event domain.StageEvent) error {

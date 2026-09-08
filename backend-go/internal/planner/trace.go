@@ -33,7 +33,7 @@ func (r *traceRecorder) traceID(fallback string) string {
 	return r.id
 }
 
-func (r *traceRecorder) span(module string, phase int, started time.Time, output string, status string) {
+func (r *traceRecorder) span(module string, phase int, started time.Time, output string, status string, inputTokens, outputTokens int) {
 	if r == nil {
 		return
 	}
@@ -41,6 +41,7 @@ func (r *traceRecorder) span(module string, phase int, started time.Time, output
 	_ = r.repo.AddSpan(ctx, r.id, trace.Span{
 		AgentName: module, AgentLabel: module, Phase: phase,
 		StartOffsetMS: started.Sub(r.start).Milliseconds(), DurationMS: time.Since(started).Milliseconds(),
+		InputTokens: inputTokens, OutputTokens: outputTokens,
 		OutputChars: len([]rune(output)), Status: status,
 	})
 }

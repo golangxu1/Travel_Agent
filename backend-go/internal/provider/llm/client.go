@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -25,6 +26,47 @@ type Response struct {
 	Text         string
 	InputTokens  int
 	OutputTokens int
+}
+
+type ErrorKind string
+
+const (
+	ErrorConfiguration  ErrorKind = "configuration"
+	ErrorAuthentication ErrorKind = "authentication"
+	ErrorQuota          ErrorKind = "quota_exceeded"
+	ErrorTimeout        ErrorKind = "timeout"
+	ErrorUnavailable    ErrorKind = "upstream_unavailable"
+	ErrorProtocol       ErrorKind = "invalid_response"
+)
+
+// ProviderError keeps failure classification stable without exposing provider
+// response bodies or credentials to the HTTP layer and trace store.
+type ProviderError struct {
+	Kind       ErrorKind
+	StatusCode int
+}
+
+func (e *ProviderError) Error() string {
+	return "llm provider error: " + string(e.Kind)
+}
+
+func KindOf(err error) ErrorKind {
+	var providerErr *ProviderError
+	if errors.As(err, &providerErr) {
+		return providerErr.Kind
+	}
+	return ""
+}
+
+func ValidateConfig(provider, model, apiKey, baseURL string) error {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider != "openai" && provider != "deepseek" && provider != "anthropic" {
+		return &ProviderError{Kind: ErrorConfiguration}
+	}
+	if strings.TrimSpace(model) == "" || strings.TrimSpace(apiKey) == "" || strings.TrimSpace(baseURL) == "" {
+		return &ProviderError{Kind: ErrorConfiguration}
+	}
+	return nil
 }
 
 type Client interface {
@@ -52,10 +94,10 @@ func NewHTTPClient(provider, baseURL, apiKey string, timeout time.Duration) *HTT
 
 func (c *HTTPClient) Complete(ctx context.Context, req Request) (Response, error) {
 	if c == nil || c.Client == nil {
-		return Response{}, errors.New("llm client is not configured")
+		return Response{}, &ProviderError{Kind: ErrorConfiguration}
 	}
 	if strings.TrimSpace(c.APIKey) == "" {
-		return Response{}, errors.New("llm api key is not configured")
+		return Response{}, &ProviderError{Kind: ErrorConfiguration}
 	}
 
 	var endpoint string
@@ -81,7 +123,7 @@ func (c *HTTPClient) Complete(ctx context.Context, req Request) (Response, error
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return Response{}, fmt.Errorf("create llm request: %w", err)
+		return Response{}, &ProviderError{Kind: ErrorConfiguration}
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if c.Provider == "anthropic" {
@@ -93,7 +135,14 @@ func (c *HTTPClient) Complete(ctx context.Context, req Request) (Response, error
 
 	resp, err := c.Client.Do(httpReq)
 	if err != nil {
-		return Response{}, fmt.Errorf("llm request failed: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) || (ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)) {
+			return Response{}, &ProviderError{Kind: ErrorTimeout}
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return Response{}, &ProviderError{Kind: ErrorTimeout}
+		}
+		return Response{}, &ProviderError{Kind: ErrorUnavailable}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
@@ -101,23 +150,32 @@ func (c *HTTPClient) Complete(ctx context.Context, req Request) (Response, error
 		return Response{}, fmt.Errorf("read llm response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Response{}, fmt.Errorf("llm returned status %d", resp.StatusCode)
+		kind := ErrorUnavailable
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			kind = ErrorAuthentication
+		case http.StatusPaymentRequired, http.StatusTooManyRequests:
+			kind = ErrorQuota
+		case http.StatusBadRequest:
+			kind = ErrorProtocol
+		}
+		return Response{}, &ProviderError{Kind: kind, StatusCode: resp.StatusCode}
 	}
 
 	if c.Provider == "anthropic" {
 		var result anthropicResponse
 		if err := json.Unmarshal(data, &result); err != nil {
-			return Response{}, errors.New("invalid llm response")
+			return Response{}, &ProviderError{Kind: ErrorProtocol}
 		}
 		return Response{Text: firstAnthropicText(result.Content), InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens}, nil
 	}
 
 	var result openAIResponse
 	if err := json.Unmarshal(data, &result); err != nil {
-		return Response{}, errors.New("invalid llm response")
+		return Response{}, &ProviderError{Kind: ErrorProtocol}
 	}
 	if len(result.Choices) == 0 {
-		return Response{}, errors.New("llm returned no choices")
+		return Response{}, &ProviderError{Kind: ErrorProtocol}
 	}
 	return Response{
 		Text:         result.Choices[0].Message.Content,

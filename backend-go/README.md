@@ -56,6 +56,10 @@ go run ./cmd/server
 
 密钥只从进程环境读取，不会写入仓库、响应、trace 或普通日志。当前 real 模式使用一次请求生成一个模块，Phase 1 的天气、目的地和住宿并行，行程和预算按依赖顺序执行。
 
+真实模式启动时会先校验 `MODEL_PROVIDER`、`MODEL_ID`、`MODEL_API_KEY` 和 `MODEL_BASE_URL`；缺失或不支持时直接终止启动，不会等到用户提交计划后才失败。Provider 错误会按认证失败、额度/限流、超时、上游不可用和返回格式异常分类。
+
+成功的真实模型调用会把 Provider 返回的输入/输出 Token 写入对应 trace span，Trace 页面会自动汇总显示总 Token。fake 模式没有真实 usage，因此显示 `N/A` 属于预期行为。
+
 ## 当前兼容接口
 
 - `GET /health`

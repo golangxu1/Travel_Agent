@@ -9,6 +9,7 @@ import (
 
 	"travel-agent/backend-go/internal/domain"
 	"travel-agent/backend-go/internal/provider/llm"
+	"travel-agent/backend-go/internal/trace"
 )
 
 type recordingLLM struct {
@@ -23,17 +24,58 @@ func (c *recordingLLM) Complete(_ context.Context, request llm.Request) (llm.Res
 
 	switch {
 	case strings.Contains(request.System, "天气顾问"):
-		return llm.Response{Text: "## 天气概况\n晴朗"}, nil
+		return llm.Response{Text: "## 天气概况\n晴朗", InputTokens: 10, OutputTokens: 4}, nil
 	case strings.Contains(request.System, "目的地专家"):
-		return llm.Response{Text: "## 城市印象\n杭州"}, nil
+		return llm.Response{Text: "## 城市印象\n杭州", InputTokens: 11, OutputTokens: 5}, nil
 	case strings.Contains(request.System, "住宿顾问"):
-		return llm.Response{Text: "## 住宿区域推荐\n西湖周边"}, nil
+		return llm.Response{Text: "## 住宿区域推荐\n西湖周边", InputTokens: 12, OutputTokens: 6}, nil
 	case strings.Contains(request.System, "行程规划师"):
-		return llm.Response{Text: "## Day 1 · 湖畔\n09:00 西湖\n---POIS---\n1|西湖|120分钟|免费|湖景"}, nil
+		return llm.Response{Text: "## Day 1 · 湖畔\n09:00 西湖\n---POIS---\n1|西湖|120分钟|免费|湖景", InputTokens: 13, OutputTokens: 7}, nil
 	case strings.Contains(request.System, "预算顾问"):
-		return llm.Response{Text: "## 总计\n¥100"}, nil
+		return llm.Response{Text: "## 总计\n¥100", InputTokens: 14, OutputTokens: 8}, nil
 	default:
 		return llm.Response{Text: "## mock"}, nil
+	}
+}
+
+type plannerTraceRepo struct{ spans []trace.Span }
+
+func (r *plannerTraceRepo) Create(context.Context, string, string) (string, error) {
+	return "trace-test", nil
+}
+func (r *plannerTraceRepo) AddSpan(_ context.Context, _ string, span trace.Span) error {
+	r.spans = append(r.spans, span)
+	return nil
+}
+func (r *plannerTraceRepo) Finish(context.Context, string, int64, string, string) error { return nil }
+func (r *plannerTraceRepo) List(context.Context, int) ([]trace.Trace, error)            { return nil, nil }
+func (r *plannerTraceRepo) Get(context.Context, string) (*trace.Detail, error) {
+	return nil, trace.ErrNotFound
+}
+
+func TestLLMPlannerPersistsProviderTokenUsage(t *testing.T) {
+	repo := &plannerTraceRepo{}
+	p := NewLLMPlanner(&recordingLLM{}, "test-model", 256, time.Second)
+	p.TraceRepository = repo
+	stream, err := p.Stream(context.Background(), testPlanRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream.Events {
+	}
+	if err := receiveStreamError(stream); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.spans) != 5 {
+		t.Fatalf("spans = %d, want 5", len(repo.spans))
+	}
+	input, output := 0, 0
+	for _, span := range repo.spans {
+		input += span.InputTokens
+		output += span.OutputTokens
+	}
+	if input != 60 || output != 30 {
+		t.Fatalf("tokens = %d/%d, want 60/30", input, output)
 	}
 }
 

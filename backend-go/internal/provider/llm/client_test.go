@@ -61,3 +61,24 @@ func TestHTTPClientAnthropicResponse(t *testing.T) {
 		t.Fatalf("unexpected response: %+v", response)
 	}
 }
+
+func TestHTTPClientClassifiesAuthenticationAndQuotaErrors(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+		client := NewHTTPClient("openai", server.URL, "test-key", time.Second)
+		_, err := client.Complete(context.Background(), Request{Model: "test-model", System: "system", User: "user"})
+		server.Close()
+		if err == nil {
+			t.Fatalf("status %d returned nil error", status)
+		}
+		kind := KindOf(err)
+		if status == http.StatusUnauthorized && kind != ErrorAuthentication {
+			t.Fatalf("status %d kind = %q", status, kind)
+		}
+		if status == http.StatusTooManyRequests && kind != ErrorQuota {
+			t.Fatalf("status %d kind = %q", status, kind)
+		}
+	}
+}

@@ -7,6 +7,9 @@ venv/
 .env.*
 !.env.example
 
+# 个人模型 / 高德密钥记录（仅本机使用，绝不提交）
+docs/local-provider-secrets.md
+
 # Python 缓存
 __pycache__/
 *.pyc

@@ -104,6 +104,12 @@ sanitized Go target is represented by
 event may be followed by `[DONE]`, and no later success/trace event may be
 emitted.
 
+LLM failures use stable codes: `llm_configuration_error`,
+`llm_authentication_failed`, `llm_quota_exceeded`, `llm_timeout`,
+`llm_upstream_unavailable`, or `llm_invalid_response`. Provider response bodies,
+API keys, and internal exception details are not returned. Successful provider
+usage is persisted in each trace span's `input_tokens` and `output_tokens`.
+
 HTTP clients may cancel either stream by closing the connection. The Go
 handler must propagate request-context cancellation to planner/provider calls;
 the client should treat a missing `[DONE]` after cancellation as cancelled, not

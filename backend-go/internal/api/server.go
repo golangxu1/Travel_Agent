@@ -13,6 +13,7 @@ import (
 
 	"travel-agent/backend-go/internal/domain"
 	"travel-agent/backend-go/internal/planner"
+	"travel-agent/backend-go/internal/provider/llm"
 	"travel-agent/backend-go/internal/trace"
 )
 
@@ -269,7 +270,7 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 		if isCanceled(r.Context(), err) {
 			return
 		}
-		writePlannerError(w)
+		writePlannerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -297,11 +298,11 @@ func (s *Server) planStream(w http.ResponseWriter, r *http.Request) {
 		if isCanceled(r.Context(), err) {
 			return
 		}
-		writePlannerError(w)
+		writePlannerError(w, err)
 		return
 	}
 	if stream == nil || stream.Events == nil {
-		writePlannerError(w)
+		writePlannerError(w, errors.New("planner returned an empty stream"))
 		return
 	}
 
@@ -316,10 +317,7 @@ func (s *Server) planStream(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if err := receiveStreamError(stream); err != nil && !isCanceled(r.Context(), err) {
-					_ = writer.Write(domain.StageEvent{
-						Error: plannerUnavailableMessage,
-						Code:  plannerUnavailableCode,
-					})
+					_ = writer.Write(plannerErrorEvent(err))
 				}
 				_ = writer.Done()
 				return
@@ -357,11 +355,11 @@ func (s *Server) planRegenerate(w http.ResponseWriter, r *http.Request) {
 		if isCanceled(r.Context(), err) {
 			return
 		}
-		writePlannerError(w)
+		writePlannerError(w, err)
 		return
 	}
 	if stream == nil || stream.Events == nil {
-		writePlannerError(w)
+		writePlannerError(w, errors.New("planner returned an empty stream"))
 		return
 	}
 
@@ -376,10 +374,7 @@ func (s *Server) planRegenerate(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if err := receiveStreamError(stream); err != nil && !isCanceled(r.Context(), err) {
-					_ = writer.Write(domain.StageEvent{
-						Error: plannerUnavailableMessage,
-						Code:  plannerUnavailableCode,
-					})
+					_ = writer.Write(plannerErrorEvent(err))
 				}
 				_ = writer.Done()
 				return
@@ -564,12 +559,37 @@ func writeRequestError(w http.ResponseWriter, err error) {
 	writeJSON(w, status, requestError{Success: false, Code: code, Error: err.Error(), Fields: fields})
 }
 
-func writePlannerError(w http.ResponseWriter) {
-	writeJSON(w, http.StatusInternalServerError, requestError{
+func writePlannerError(w http.ResponseWriter, err error) {
+	code, message, status := plannerErrorDetails(err)
+	writeJSON(w, status, requestError{
 		Success: false,
-		Code:    plannerUnavailableCode,
-		Error:   plannerUnavailableMessage,
+		Code:    code,
+		Error:   message,
 	})
+}
+
+func plannerErrorEvent(err error) domain.StageEvent {
+	code, message, _ := plannerErrorDetails(err)
+	return domain.StageEvent{Error: message, Code: code}
+}
+
+func plannerErrorDetails(err error) (string, string, int) {
+	switch llm.KindOf(err) {
+	case llm.ErrorConfiguration:
+		return "llm_configuration_error", "大模型配置不完整或不受支持，请检查服务端配置。", http.StatusInternalServerError
+	case llm.ErrorAuthentication:
+		return "llm_authentication_failed", "大模型认证失败，请检查 API Key。", http.StatusBadGateway
+	case llm.ErrorQuota:
+		return "llm_quota_exceeded", "大模型额度或调用频率受限，请检查账户状态。", http.StatusBadGateway
+	case llm.ErrorTimeout:
+		return "llm_timeout", "大模型请求超时，请稍后重试。", http.StatusGatewayTimeout
+	case llm.ErrorUnavailable:
+		return "llm_upstream_unavailable", "大模型服务暂时不可用，请稍后重试。", http.StatusBadGateway
+	case llm.ErrorProtocol:
+		return "llm_invalid_response", "大模型返回格式异常，请稍后重试。", http.StatusBadGateway
+	default:
+		return plannerUnavailableCode, plannerUnavailableMessage, http.StatusInternalServerError
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

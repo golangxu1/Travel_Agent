@@ -20,6 +20,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.ValidateRealMode(); err != nil {
+		log.Fatalf("invalid real-mode LLM configuration: set MODEL_PROVIDER, MODEL_ID, MODEL_API_KEY, and a supported MODEL_BASE_URL")
+	}
 	var servicePlanner planner.Planner
 	if cfg.Mode == "real" {
 		client := llm.NewHTTPClient(cfg.ModelProvider, cfg.ModelBaseURL, cfg.ModelAPIKey, cfg.ModelTimeout)

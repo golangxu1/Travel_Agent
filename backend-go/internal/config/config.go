@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"travel-agent/backend-go/internal/provider/llm"
 )
 
 const defaultAddress = ":8001"
@@ -27,6 +29,13 @@ type Config struct {
 	PublicBaseURL   string
 	TraceDBPath     string
 	AllowedOrigins  []string
+}
+
+func (c Config) ValidateRealMode() error {
+	if c.Mode != "real" {
+		return nil
+	}
+	return llm.ValidateConfig(c.ModelProvider, c.ModelID, c.ModelAPIKey, c.ModelBaseURL)
 }
 
 // Load reads optional local settings without mutating process environment.

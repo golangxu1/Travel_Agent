@@ -101,7 +101,7 @@ func (p *FakePlanner) Stream(ctx context.Context, req domain.PlanRequest) (*Even
 				} else if event.Stage == "budget" {
 					phase = 3
 				}
-				recorder.span(event.Stage, phase, started, fmt.Sprint(event.Content), "success")
+				recorder.span(event.Stage, phase, started, fmt.Sprint(event.Content), "success", 0, 0)
 			}
 		}
 	}()
